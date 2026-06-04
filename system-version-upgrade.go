@@ -9,13 +9,6 @@ import (
 )
 
 func systemUpdate(c *cli.Context) error {
-	//add logic so it runs
-
-	// sudo dnf upgrade --refresh
-	// sudo dnf system-upgrade download --releasever=43
-	// sudo dnf offline reboot
-
-	//fmt.Println("works")
 	return logic()
 }
 
@@ -43,7 +36,7 @@ func logic() error {
 
 	//RUNING sudo dnf system-upgrade download --releasever=43
 	//prepere commands to run
-	cmd2 := exec.Command("sudo", "dnf", "system-upgrade", "download", "--releasever=43", "-y")
+	cmd2 := exec.Command("sudo", "dnf", "system-upgrade", "download", "--releasever=44", "-y")
 	//run and throw error if there is one)
 	cmd2.Stdout = os.Stdout
 	cmd2.Stderr = os.Stderr
@@ -59,21 +52,16 @@ func logic() error {
 		fmt.Printf("Full error: %v\n", err)
 		return err
 	}
-	// output2, err2 := cmd2.CombinedOutput()
-	// if err2 != nil {
-	// 	return err
-	// }
-	// //OutPuts the output from the console after the command was ran
-	// fmt.Println(string(output2))
 
 	fmt.Println(string("Step 2 is compleated"))
 
 	fmt.Println(string("Warning system might restart"))
 
-	//RUNING sudo dnf offline reboot
-	//prepere commands to run
-	cmd3 := exec.Command("sudo", "dnf", "offline", "reboot")
+	//RUNING "sudo dnf offline reboot"
+	//prepere the command and save it to a cmd variable
+	cmd3 := exec.Command("sudo", "dnf", "offline", "reboot",)
 	//run and throw error if there is one)
+	//connect the os terminal to the command we created
 	cmd3.Stdout = os.Stdout
 	cmd3.Stderr = os.Stderr
 	cmd3.Stdin = os.Stdin
@@ -88,13 +76,6 @@ func logic() error {
 		fmt.Printf("Full error: %v\n", err)
 		return err
 	}
-	//run and throw error if there is one)
-	// output3, err3 := cmd3.CombinedOutput()
-	// if err3 != nil {
-	// 	return err
-	// }
-	// //OutPuts the output from the console after the command was ran
-	// fmt.Println(string(output3))
 
 	fmt.Println(string("System is succsesfully updated"))
 
