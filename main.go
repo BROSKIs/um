@@ -80,7 +80,7 @@ func runCli() error {
 				},
 			},
 			{
-				Name:   "ystem-version-updates",
+				Name:   "system-version-upgrade",
 				Usage:  "manage Ultramarine Linux version update",
 				Action: systemUpdate,
 			},

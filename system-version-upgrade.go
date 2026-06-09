@@ -34,7 +34,7 @@ func logic() error {
 
 	fmt.Println(string("Step 1 is compleated"))
 
-	//RUNING sudo dnf system-upgrade download --releasever=43
+	//RUNING sudo dnf system-upgrade download --releasever=44
 	//prepere commands to run
 	cmd2 := exec.Command("sudo", "dnf", "system-upgrade", "download", "--releasever=44", "-y")
 	//run and throw error if there is one)
