@@ -44,6 +44,10 @@ func runCli() error {
 						Name:  "check",
 						Usage: "Check if a newer version is available without upgrading",
 					},
+					&cli.BoolFlag{
+						Name:  "allowerasing",
+						Usage: "Forcefully remove some packages (this is potentially destructive! make sure you know what you're doing)",
+					},
 				},
 			},
 			{
@@ -96,20 +100,21 @@ func runCli() error {
 					},
 				},
 			},
+
 			// {
-			//  Name:   "experiments",
-			//  Usage:  "manage Ultramarine Linux experiments, a preview of features to come",
-			//  Action: listExperiments,
-			//  Subcommands: []*cli.Command{
-			//      {
-			//          Name:   "enable",
-			//          Action: enableExperiment,
-			//      },
-			//      {
-			//          Name:   "disable",
-			//          Action: disableExperiment,
-			//      },
-			//  },
+			// 	Name:   "experiments",
+			// 	Usage:  "manage Ultramarine Linux experiments, a preview of features to come",
+			// 	Action: listExperiments,
+			// 	Subcommands: []*cli.Command{
+			// 		{
+			// 			Name:   "enable",
+			// 			Action: enableExperiment,
+			// 		},
+			// 		{
+			// 			Name:   "disable",
+			// 			Action: disableExperiment,
+			// 		},
+			// 	},
 			// },
 		},
 	}

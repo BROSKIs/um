@@ -1,16 +1,40 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"sort"
+	"strconv"
+	"time"
 
 	"github.com/Ultramarine-Linux/um/pkg/util"
 	"github.com/charmbracelet/huh"
 	"github.com/urfave/cli/v2"
+	"github.com/acobaugh/osrelease"
 )
+
+type collectionsResponse struct {
+	Collections []collection `json:"collections"`
+}
+
+type collection struct {
+	AllowRetire bool   `json:"allow_retire"`
+	Branchname  string `json:"branchname"`
+	DateCreated string `json:"date_created"`
+	DateUpdated string `json:"date_updated"`
+	DistTag     string `json:"dist_tag"`
+	KojiName    string `json:"koji_name"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Version     string `json:"version"`
+}
 
 var UpgradeEnvars = []string{
 	"UM_DATA",
@@ -18,40 +42,95 @@ var UpgradeEnvars = []string{
 
 // getCurrentReleaseVersion reads /etc/os-release to safely discover what version the user is running
 func getCurrentReleaseVersion() (string, error) {
-	file, err := os.Open("/etc/os-release")
+	release, err := osrelease.Read()
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "VERSION_ID=") {
-			// Strips VERSION_ID="43" down to just 43
-			version := strings.Trim(strings.TrimPrefix(line, "VERSION_ID="), "\"")
-			return version, nil
-		}
-	}
-	return "", fmt.Errorf("failed to locate VERSION_ID inside /etc/os-release")
+  return release["VERSION_ID"], nil
 }
 
 // getNextReleaseVersion calculates the next upgrade jump.
-// (Owen mentioned moving from 43 to 44 is actively being prepared right now)
 func getNextReleaseVersion(currentVersion string) (string, error) {
-	// TODO: When Fyra infrastructure APIs are ready, substitute this logic with an active infrastructure lookup.
-	if currentVersion == "43" {
-		return "44", nil
-	}
+	const url = "https://ultramarine-linux.org/pkgdb/collections.json"
 
-	// Dynamic fallback: attempt to increment numerically if not explicit string matches
-	var currentNum int
-	_, err := fmt.Sscanf(currentVersion, "%d", &currentNum)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("invalid current version structure format: %v", err)
+		return "", err
 	}
 
-	return fmt.Sprintf("%d", currentNum+1), nil
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("fetch collections.json: http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var cr collectionsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return "", err
+	}
+
+	// Build a sorted list of active numeric versions.
+	type vitem struct {
+		raw string
+		n   int
+	}
+	var active []vitem
+	for _, c := range cr.Collections {
+		if strings.TrimSpace(c.Status) != "Active" {
+			continue
+		}
+		n, ok := parseMajorVersionInt(c.Version)
+		if !ok {
+			continue // skip "devel" or other non-numeric versions
+		}
+		active = append(active, vitem{raw: c.Version, n: n})
+	}
+	if len(active) == 0 {
+		return "", errors.New("no Active numeric versions found in collections.json")
+	}
+
+	sort.Slice(active, func(i, j int) bool { return active[i].n < active[j].n })
+
+	curN, curIsNum := parseMajorVersionInt(currentVersion)
+
+	if curN == 0 {
+		return "", fmt.Errorf("Cannot detect current version from /etc/os-release (VERSION_ID=%q)", currentVersion)
+	}
+
+	// If currentVersion is not numeric (e.g., "devel"), treat it as "before everything".
+	if !curIsNum {
+		return strconv.Itoa(active[0].n), nil
+	}
+
+	// Find the first Active version with n > current.
+	for i := 0; i < len(active); i++ {
+		if active[i].n > curN {
+			return strconv.Itoa(active[i].n), nil
+		}
+	}
+
+	return "", fmt.Errorf("no next Active version found greater than %q", currentVersion)
+}
+
+func parseMajorVersionInt(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	// Versions in the JSON are like "42", "43", "44". Keep it strict.
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // runCommand routes standard I/O so DNF download progress animations are visible to the user
@@ -118,26 +197,20 @@ func systemVersionUpgrade(c *cli.Context) error {
 		return nil
 	}
 
-	// 1. Fully sync and prepare current local system tracking branch packages
 	fmt.Println("\n[*] Syncing and fully updating packages on your current release version...")
 	if err := runCommand("dnf", "upgrade", "--refresh", "-y"); err != nil {
 		return cli.Exit(fmt.Sprintf("DNF failed during pre-upgrade packages synchronization: %v", err), 1)
 	}
 
-	// 2. Double check dnf-plugin-system-upgrade is local
-	fmt.Println("\n[*] Assuring system upgrade plugins are active...")
-	if err := runCommand("dnf", "install", "dnf-plugin-system-upgrade", "-y"); err != nil {
-		return cli.Exit(fmt.Sprintf("Failed asserting infrastructure tracking dependencies: %v", err), 1)
-	}
-
-	// 3. Initiate major repository release downloads
 	fmt.Printf("\n[*] Downloading upgrade tree metadata targets for Release %s...\n", targetVer)
-	downloadArgs := []string{"system-upgrade", "download", fmt.Sprintf("--releasever=%s", targetVer), "--allowerasing", "-y"}
+	downloadArgs := []string{"system-upgrade", "download", fmt.Sprintf("--releasever=%s", targetVer), "-y"}
+	if c.Bool("allowerasing") {
+		downloadArgs = append(downloadArgs, "--allowerasing")
+	}
 	if err := runCommand("dnf", downloadArgs...); err != nil {
 		return cli.Exit(fmt.Sprintf("DNF execution pipeline failed to pull systemic upgrade branches: %v", err), 1)
 	}
 
-	// 4. Verification and target reboot sequence configuration
 	var rebootNow bool
 	if yesFlag {
 		rebootNow = true
@@ -157,23 +230,8 @@ func systemVersionUpgrade(c *cli.Context) error {
 	if rebootNow {
 		fmt.Println("\n[*] Activating system-upgrade trigger and rebooting system...")
 
-		// 1. Try the polite DNF system-upgrade reboot sequence first
 		if err := runCommand("dnf", "system-upgrade", "reboot"); err != nil {
-			fmt.Printf("\n[!] Polite reboot blocked by inhibitor locks (%v). Forcing bypass...\n", err)
-
-			// 2. Fallback Override: Tell systemctl to force the reboot past the locks
-			forceReboot := exec.Command("systemctl", "reboot", "--force")
-			forceReboot.Stdout = os.Stdout
-			forceReboot.Stderr = os.Stderr
-
-			if err := forceReboot.Run(); err != nil {
-				// 3. Ultimate Fallback: Direct hardware reset via standard reboot flags
-				fmt.Println("[!] Forceful systemctl failed. Triggering hardware reset...")
-				hardReset := exec.Command("reboot", "-f")
-				_ = hardReset.Run()
-
-				return cli.Exit("Failed to automatically cycle the machine power.", 1)
-			}
+			return cli.Exit("Failed to reboot the machine for system upgrade. You may try running `sudo dnf system-upgrade reboot` manually.", 1)
 		}
 	} else {
 		fmt.Println("\nUpgrade path staged successfully! To run the final deployment, execute: (expores in 12hrs or after reboot)")
